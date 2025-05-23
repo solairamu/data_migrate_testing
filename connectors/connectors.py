@@ -25,7 +25,6 @@ class DataConnector(ABC):
         """
         Yield the dataset in chunks of size `chunk_size`.
         Default implementation reads all data and yields it once.
-        Override for true streaming connectors.
         """
         df = self.load()
         yield df
@@ -34,7 +33,7 @@ class DataConnector(ABC):
 class CSVConnector(DataConnector):
     """
     Connector for CSV files.
-    Uses pandas.read_csv and supports chunked reads.
+    Uses pandas.read_csv under the hood and supports chunked reads.
     """
 
     def __init__(
@@ -75,7 +74,7 @@ class CSVConnector(DataConnector):
 class ExcelConnector(DataConnector):
     """
     Connector for Excel files.
-    Uses pandas.read_excel; concatenates multiple sheets if requested.
+    Reads one or all sheets, then drops any "Unnamed:" columns by default.
     """
 
     def __init__(
@@ -83,11 +82,13 @@ class ExcelConnector(DataConnector):
         filepath: str,
         sheet_name: Optional[str] = 0,
         engine: Optional[str] = None,
+        drop_unnamed: bool = True,
         **read_excel_kwargs
     ):
         self.filepath = filepath
         self.sheet_name = sheet_name
         self.engine = engine
+        self.drop_unnamed = drop_unnamed
         self.read_excel_kwargs = read_excel_kwargs
 
     def load(self) -> pd.DataFrame:
@@ -97,9 +98,19 @@ class ExcelConnector(DataConnector):
             engine=self.engine,
             **self.read_excel_kwargs
         )
+
+        # If multiple sheets requested, concatenate them
         if isinstance(df, dict):
-            # concatenate all sheets
-            return pd.concat(df.values(), ignore_index=True)
+            df = pd.concat(df.values(), ignore_index=True)
+
+        if self.drop_unnamed:
+            # keep only string-named columns that don't start with "Unnamed"
+            df = df.loc[
+                :,
+                [col for col in df.columns
+                 if isinstance(col, str) and not col.startswith("Unnamed")]
+            ]
+
         return df
 
 
@@ -124,12 +135,14 @@ class JSONConnector(DataConnector):
 
     def load(self) -> pd.DataFrame:
         if self.lines:
+            # line-delimited JSON (JSONL)
             return pd.read_json(
                 self.filepath,
                 orient=self.orient,
                 lines=True,
                 **self.json_kwargs
             )
+        # load full JSON document
         with open(self.filepath, "r", encoding="utf-8") as f:
             obj = json.load(f)
         return pd.json_normalize(obj, **self.json_kwargs)
